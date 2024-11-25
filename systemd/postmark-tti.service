@@ -1,0 +1,10 @@
+[Unit]
+Description=Fetch Postmark Time to Inbox data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -c 'mkdir -p "/home/jonas/Downloads/postmark-tti/$(date +%%Y/%%m)"'
+ExecStart=/usr/bin/bash -c 'curl https://tti.postmarkapp.com/api/1.0/tti -o "/home/jonas/Downloads/postmark-tti/$(date +%%Y/%%m/postmark-tti-%%s-%%Y-%%m-%%d-%%H-%%M-%%S.%%N.json)"'
+
+[Install]
+WantedBy=default.target

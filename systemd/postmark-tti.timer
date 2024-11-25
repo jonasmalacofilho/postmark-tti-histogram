@@ -1,0 +1,9 @@
+[Unit]
+Description=Timer to fetch Postmark Time to Inbox data
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1hour
+
+[Install]
+WantedBy=default.target
