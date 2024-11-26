@@ -1,8 +1,10 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::ops::Div;
 use std::time::Duration;
 use std::{env, fs};
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use hdrhistogram::Histogram;
 use serde::Deserialize;
 use walkdir::{DirEntry, WalkDir};
@@ -18,21 +20,6 @@ struct Service {
 struct DataFile {
     timestamp: u64,
     contents: Vec<Service>,
-}
-
-fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
-    fn find_in(entry: &DirEntry) -> Option<&str> {
-        entry
-            .file_name()
-            .to_str()?
-            .strip_prefix("postmark-tti-")?
-            .split_once('-')
-            .map(|(prefix, _)| prefix)
-    }
-    find_in(entry)
-        .context("data file name follow the pattern `postmark-tti-<timestamp>-*.json`")?
-        .parse()
-        .context("failed to parse timestamp from data file name as u64")
 }
 
 fn main() -> Result<()> {
@@ -65,26 +52,51 @@ fn main() -> Result<()> {
     data_files.sort_by_key(|f| f.timestamp);
 
     let mut histograms: HashMap<String, Histogram<u64>> = Default::default();
+    let mut previous_file: Option<DataFile> = None;
+
     for file in data_files {
-        for service in file.contents {
+        for cur in &file.contents {
             let histogram = histograms
-                .entry(service.name.to_string())
+                .entry(cur.name.to_string())
                 .or_insert_with(|| Histogram::new(4).unwrap());
 
-            // TODO: try to deduplicate data already present in the preceeding file. This might not
-            // be possible if all the data points we get are averages...
+            let timings = if let Some(ref previous_file) = previous_file {
+                let dt = file.timestamp - previous_file.timestamp;
+                if let Some(pre) = previous_file
+                    .contents
+                    .iter()
+                    .find(|pre_timings| pre_timings.name == cur.name)
+                {
+                    dedup(&cur.timings_millis, &pre.timings_millis, dt)?.0
+                } else {
+                    todo!("check earlier files for redundant data for this service")
+                }
+            } else {
+                &cur.timings_millis
+            };
 
-            for v in service.timings_millis {
+            //eprintln!(
+            //    "{}/{}: discarded {} redundant samples",
+            //    file.timestamp,
+            //    cur.name,
+            //    cur.timings_millis.len() - timings.len()
+            //);
+
+            for v in timings {
                 histogram.record(v.ceil() as u64)?;
             }
         }
+        previous_file = Some(file);
     }
 
     let mut service_names: Vec<_> = histograms.keys().collect();
     service_names.sort();
 
-    for (service, histogram) in service_names.iter().zip(histograms.values()) {
-        println!("{}:", service);
+    for (service, histogram) in service_names
+        .into_iter()
+        .map(|service| (service, histograms.get(service).unwrap()))
+    {
+        println!("{}", service);
         for quant in ["50", "68", "95", "99", "99.9", "99.99", "99.999"] {
             let millis = histogram.value_at_quantile(quant.parse::<f64>()? / 1E2);
             println!(
@@ -105,4 +117,171 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
+    fn find_in(entry: &DirEntry) -> Option<&str> {
+        entry
+            .file_name()
+            .to_str()?
+            .strip_prefix("postmark-tti-")?
+            .split_once('-')
+            .map(|(prefix, _)| prefix)
+    }
+    find_in(entry)
+        .context("data file name follow the pattern `postmark-tti-<timestamp>-*.json`")?
+        .parse()
+        .context("failed to parse timestamp from data file name as u64")
+}
+
+// Dedup the data coming from consecutive collections.
+//
+// For practical reasons (like not knowing exactly what we're getting from Postmark), we want to do
+// think about without assuming that equivalent data points from different collections have
+// *exactly* the same values.
+//
+// In ideal circunstances it would still be pretty simple to do dedup the data, even with the above
+// restriction. The diagram bellow shows a regular stream of data points at `i` intervals, with
+// collections at `t0` and `t1 = t0 + N * i, N ∈ ℕ`, and it's trivial to see that we should keep
+// the last N data points from the second collection.
+//
+// ```plain
+//                      t0      t1
+// A B C D E F G H I J K|       |
+// | |     E F G H I J K|L M N O|
+//  i      ^^^^^^^^^^^^^ ^^^^^^^
+//           redundant     new
+// ```
+//
+// However, life isn't quite so simple: we need to account that the real intervals at which new
+// data becomes available or that we make our collection requests have variance from their nominal
+// intervals.
+//
+// For simplicity, let's keep the stream of data points regular (as it really doesn't matter which
+// end is drifting from its nominal interval), but consider that our second collection happens at
+// some `t1`, but we only known `t1* ∈ [ta, tb]`, and `t1*` was measured by a different clock than
+// the one used for `t0`, `ta` and `tb`. In other words, we also can't assume to know how many
+// intervals `i` have passed.
+//
+// ```plain
+//                             t1*?
+//                      t0    ta  tb
+// A B C D E F G H I J K|     |   |
+// | |     E F G H I J K|L M N|O  |
+//  i      E F G H I J K|L M N|O P|
+//         ^^^^^^^^^^^^^ ^^^^^^^^^
+//           redundant      new
+// ```
+//
+// Now the problem has gotten way too complicated. But, wait, there's still hope. While the clocks
+// are different, we can assume that their rates are equal (within an acceptable level of
+// precision), and that the skew between them is smaller than the nominal publication and
+// collection invervals (but not insignificant).
+//
+// With these simplifications, we can calculate a real estimate `n'` of how many intervals have
+// passed: `n' = (t1* - t0) / i, n' ∈ ℝ`. And given a maximum skew `δ < i`, the integer estimate
+// `n` lies in the interval `[floor(n'-1), floor(n'+1)]`.
+//
+// This leaves us with just three possible cases to consider: `n == floor(n') - 1`, `n ==
+// floor(n')` and `n == floor(n') + 1`. And we can choose the case that minimizes the error from
+// the deduplication. We can compute this error in several ways, the most trivial yet robust being
+// the sum of squared residuals; but if the data really does match exactly, a simple equality
+// comparison would work too.
+//
+// However, there's one final thing to consider: all data points we get from Postmark appear to be
+// the result of some aggregation of the true measurements they make. And because of this the last
+// data point from one collection will frequently appear with a different value in the subsequent
+// collection. (The aggregation they use might be the average of all measurements in fixed
+// 15-minute windows).
+//
+// We could simply ignore this, and let least squares try to to make the best of it... and it would
+// work ok. But instead let's take the opportunity to retain *both* values, by always keeping one
+// extra data point from the later collection (which is *partially* redundant with the last data
+// point from the previous collection).
+//
+// ```plain
+//                      t0      t1
+// A B C D E F G H I J X|       |
+// | |     E F G H I J Y|L M N O|
+//  i      ^^^^^^^^^^^ ^ ^^^^^^^
+//          redundant  *  new
+//                   dual
+//
+// With this final adjustment, the cases to consider are: `m == floor(n')`, `m == floor(n') + 1`
+// and `m == floor(n') + 2`. Again, we choose the case that minimizes the (sum of the squares of
+// the) error from the deduplication.
+fn dedup<'a>(
+    current: &'a [f64],
+    previous: &'_ [f64],
+    timestamp_delta: u64,
+) -> Result<(&'a [f64], f64)> {
+    ensure!(current.len() == previous.len());
+
+    // Compute the standartized error (similar to standard deviations from statistics) from
+    // deduping `a` and `b`. The result is comparable with the values in `a` and `b`.
+    //
+    // Since we now know that all redundant points *except the last one* (which we keep anyways)
+    // have exactly the same value in both current and previous collections, we could simplify this
+    // to a simple equality comparison. But let's leave the least squares in, as it's more robust.
+    fn compute_error_millis(a: &[f64], b: &[f64]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        if a.is_empty() {
+            return 0.0;
+        }
+        a.iter()
+            .zip(b)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .div(a.len() as f64)
+            .sqrt()
+    }
+
+    let m: usize = (timestamp_delta / INTERVAL_SECS).try_into()?;
+    if m == 0 {
+        return Ok((&[], 0.0));
+    }
+
+    let (best_keep, error_millis) = (m..=m + 2)
+        .map(|keep| {
+            let error_millis = compute_error_millis(
+                &current[..current.len() - keep],
+                &previous[keep - 1..previous.len() - 1],
+            );
+            (keep, error_millis)
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
+        .expect("iterator statically constructed from non-empty range");
+
+    ensure!(
+        error_millis < 1e3,
+        "redundant data should match perfectly or near perfectly"
+    );
+    Ok((&current[current.len() - best_keep..], error_millis))
+}
+
+const INTERVAL_SECS: u64 = 900;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smoke() {
+        #[rustfmt::skip]
+        let cur = [               4.0, 4.9, 6.0, 7.0, 8.0];
+        let pre = [1.0, 2.0, 3.0, 4.0, 5.1];
+
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 2 + 1).unwrap(),
+            ([4.9, 6.0, 7.0, 8.0].as_slice(), 0.0)
+        );
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 3).unwrap(),
+            ([4.9, 6.0, 7.0, 8.0].as_slice(), 0.0)
+        );
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 4 - 1).unwrap(),
+            ([4.9, 6.0, 7.0, 8.0].as_slice(), 0.0)
+        );
+    }
 }
