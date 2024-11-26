@@ -75,12 +75,12 @@ fn main() -> Result<()> {
                 &cur.timings_millis
             };
 
-            //eprintln!(
-            //    "{}/{}: discarded {} redundant samples",
-            //    file.timestamp,
-            //    cur.name,
-            //    cur.timings_millis.len() - timings.len()
-            //);
+            eprintln!(
+                "// {}: {}: {} non-redudant samples",
+                file.timestamp,
+                cur.name,
+                timings.len()
+            );
 
             for v in timings {
                 histogram.record(v.ceil() as u64)?;
@@ -88,6 +88,7 @@ fn main() -> Result<()> {
         }
         previous_file = Some(file);
     }
+    eprintln!();
 
     let mut service_names: Vec<_> = histograms.keys().collect();
     service_names.sort();
