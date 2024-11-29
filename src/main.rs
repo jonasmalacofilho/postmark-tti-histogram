@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Div;
 use std::time::Duration;
@@ -67,7 +66,12 @@ fn main() -> Result<()> {
                     .iter()
                     .find(|pre_timings| pre_timings.name == cur.name)
                 {
-                    dedup(&cur.timings_millis, &pre.timings_millis, dt)?.0
+                    dedup(&cur.timings_millis, &pre.timings_millis, dt)
+                        .context(format!(
+                            "failed to dedup {} data @ {} with previous data @ {}",
+                            cur.name, file.timestamp, previous_file.timestamp
+                        ))?
+                        .0
                 } else {
                     todo!("check earlier files for redundant data for this service")
                 }
@@ -212,10 +216,14 @@ fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
 // floor(n')`, `m == floor(n') + 1` and `m == floor(n') + 2` and, once again, we choose the case
 // that minimizes the (sum of the squares of the) error from the deduplication.
 //
-// Next, we check the partially redundant data point and pick the worst value for it.
-//
-// Finally, we always remove the last data point from the current collection, since at this time it's not yet
+// Next, we check the partially redundant data point and pick the worst value for it. And we always
+// also remove the last data point from the current collection, since at this time it's not yet
 // known whether its worst value will be, and reconsider it on the next call/collection.
+//
+// Finally, there's one more hitch. In practice we've noticed one case where the data in the
+// previous collection was more than `i` outdated, resulting in an optimial `m == floor(n') + 3`.
+// Thus, for account for this and ever larger drifts, we consider `m ∈ [floor(n'), floor(n') + k]`,
+// for some reasonable `k >= 2`.
 fn dedup(current: &[f64], previous: &[f64], timestamp_delta: u64) -> Result<(Vec<f64>, f64)> {
     ensure!(current.len() == previous.len());
     let len = current.len();
@@ -245,7 +253,7 @@ fn dedup(current: &[f64], previous: &[f64], timestamp_delta: u64) -> Result<(Vec
         return Ok((vec![], 0.0));
     }
 
-    let (best_keep, error_millis) = (m..=m + 2)
+    let (best_keep, error_millis) = (m..=m + 6)
         .map(|keep| {
             if keep < len {
                 let error_millis =
@@ -257,15 +265,24 @@ fn dedup(current: &[f64], previous: &[f64], timestamp_delta: u64) -> Result<(Vec
         })
         .min_by(|a, b| {
             a.1.partial_cmp(&b.1)
-                .unwrap_or(Ordering::Equal)
+                .expect("errors should not be NaNs")
                 .then(a.0.cmp(&b.0))
         })
         .expect("candidates iterator should have more than one item");
 
     ensure!(
         error_millis < 1e3,
-        "redundant data should match perfectly or near perfectly"
+        concat!(
+            "redundant data should match perfectly or near perfectly ",
+            "(timestamp_delta = {}, best_keep = {}, error_millis = {:.1})"
+        ),
+        timestamp_delta,
+        best_keep,
+        error_millis,
     );
+    if best_keep > m + 2 {
+        eprintln!("// drift larger than nomminal publication interval");
+    }
 
     let mut ret = current[len.saturating_sub(best_keep)..len - 1].to_vec();
     // Try to differentiate between partial and full overlaps, even in the fact of uncertainty.
