@@ -72,7 +72,7 @@ fn main() -> Result<()> {
                     todo!("check earlier files for redundant data for this service")
                 }
             } else {
-                &cur.timings_millis
+                cur.timings_millis.clone()
             };
 
             eprintln!(
@@ -196,9 +196,8 @@ fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
 // 15-minute windows).
 //
 // We could simply ignore this, and let least squares try to to make the best of it... and it would
-// work ok. But instead let's take the opportunity to retain *both* values, by always keeping one
-// extra data point from the later collection (which is *partially* redundant with the last data
-// point from the previous collection).
+// work ok. But instead let's take the opportunity only retain the worst of the two different
+// values.
 //
 // ```plain
 //                      t0      t1
@@ -206,24 +205,28 @@ fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
 // | |     E F G H I J Y|L M N O|
 //  i      ^^^^^^^^^^^ ^ ^^^^^^^
 //          redundant  *  new
-//                   dual
+//                 undecided
+// ```
 //
-// With this final adjustment, the cases to consider are: `m == floor(n')`, `m == floor(n') + 1`
-// and `m == floor(n') + 2`. Again, we choose the case that minimizes the (sum of the squares of
-// the) error from the deduplication.
-fn dedup<'a>(
-    current: &'a [f64],
-    previous: &'_ [f64],
-    timestamp_delta: u64,
-) -> Result<(&'a [f64], f64)> {
+// Therefore, we initially want to keep `m = n + 1` intervals. The cases to consider are: `m ==
+// floor(n')`, `m == floor(n') + 1` and `m == floor(n') + 2` and, once again, we choose the case
+// that minimizes the (sum of the squares of the) error from the deduplication.
+//
+// Next, we check the partially redundant data point and pick the worst value for it.
+//
+// Finally, we always remove the last data point from the current collection, since at this time it's not yet
+// known whether its worst value will be, and reconsider it on the next call/collection.
+fn dedup(current: &[f64], previous: &[f64], timestamp_delta: u64) -> Result<(Vec<f64>, f64)> {
     ensure!(current.len() == previous.len());
+    let len = current.len();
 
-    // Compute the standartized error (similar to standard deviations from statistics) from
+    // Compute a standardized error (similar to standard deviations from statistics) from
     // deduping `a` and `b`. The result is comparable with the values in `a` and `b`.
     //
-    // Since we now know that all redundant points *except the last one* (which we keep anyways)
-    // have exactly the same value in both current and previous collections, we could simplify this
-    // to a simple equality comparison. But let's leave the least squares in, as it's more robust.
+    // Since we now know that all redundant points (except the last one, but this function is not
+    // called with it) have exactly the same value in both current and previous collections, we
+    // could simplify this to a simple equality comparison. But let's leave the least squares in,
+    // as it's more robust.
     fn compute_error_millis(a: &[f64], b: &[f64]) -> f64 {
         assert_eq!(a.len(), b.len());
         if a.is_empty() {
@@ -239,25 +242,40 @@ fn dedup<'a>(
 
     let m: usize = (timestamp_delta / INTERVAL_SECS).try_into()?;
     if m == 0 {
-        return Ok((&[], 0.0));
+        return Ok((vec![], 0.0));
     }
 
     let (best_keep, error_millis) = (m..=m + 2)
         .map(|keep| {
-            let error_millis = compute_error_millis(
-                &current[..current.len() - keep],
-                &previous[keep - 1..previous.len() - 1],
-            );
-            (keep, error_millis)
+            if keep < len {
+                let error_millis =
+                    compute_error_millis(&current[..len - keep], &previous[keep - 1..len - 1]);
+                (keep, error_millis)
+            } else {
+                (keep, 0.0)
+            }
         })
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
-        .expect("iterator statically constructed from non-empty range");
+        .min_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        })
+        .expect("candidates iterator should have more than one item");
 
     ensure!(
         error_millis < 1e3,
         "redundant data should match perfectly or near perfectly"
     );
-    Ok((&current[current.len() - best_keep..], error_millis))
+
+    let mut ret = current[len.saturating_sub(best_keep)..len - 1].to_vec();
+    // Try to differentiate between partial and full overlaps, even in the fact of uncertainty.
+    // When in doubt, compare against the mean value `m`.
+    if best_keep < len || best_keep != m {
+        ret[0] = ret[0].max(previous[len - 1]);
+    } else {
+        ret.insert(0, previous[len - 1]);
+    }
+    Ok((ret, error_millis))
 }
 
 const INTERVAL_SECS: u64 = 900;
@@ -271,18 +289,107 @@ mod tests {
         #[rustfmt::skip]
         let cur = [               4.0, 4.9, 6.0, 7.0, 8.0];
         let pre = [1.0, 2.0, 3.0, 4.0, 5.1];
-
-        assert_eq!(
-            dedup(&cur, &pre, INTERVAL_SECS * 2 + 1).unwrap(),
-            ([4.9, 6.0, 7.0, 8.0].as_slice(), 0.0)
-        );
         assert_eq!(
             dedup(&cur, &pre, INTERVAL_SECS * 3).unwrap(),
-            ([4.9, 6.0, 7.0, 8.0].as_slice(), 0.0)
+            (vec![5.1, 6.0, 7.0], 0.0)
+        );
+
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 3 - 1).unwrap(),
+            (vec![5.1, 6.0, 7.0], 0.0)
         );
         assert_eq!(
             dedup(&cur, &pre, INTERVAL_SECS * 4 - 1).unwrap(),
-            ([4.9, 6.0, 7.0, 8.0].as_slice(), 0.0)
+            (vec![5.1, 6.0, 7.0], 0.0)
+        );
+    }
+
+    #[test]
+    fn undecided_is_worst_in_current() {
+        #[rustfmt::skip]
+        let cur = [               4.0, 5.9, 6.0, 7.0, 8.0];
+        let pre = [1.0, 2.0, 3.0, 4.0, 5.1];
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 3).unwrap(),
+            (vec![5.9, 6.0, 7.0], 0.0)
+        );
+
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 3 - 1).unwrap(),
+            (vec![5.9, 6.0, 7.0], 0.0)
+        );
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 4 - 1).unwrap(),
+            (vec![5.9, 6.0, 7.0], 0.0)
+        );
+    }
+
+    #[test]
+    fn full_overlap() {
+        let cur = [1.0, 2.0, 3.0, 4.0, 4.9];
+        let pre = [1.0, 2.0, 3.0, 4.0, 5.1];
+        assert_eq!(dedup(&cur, &pre, 0).unwrap(), (vec![], 0.0));
+        assert_eq!(dedup(&cur, &pre, INTERVAL_SECS - 1).unwrap(), (vec![], 0.0));
+    }
+
+    #[test]
+    fn min_overlap() {
+        #[rustfmt::skip]
+        let cur = [                    4.9, 6.0, 7.0, 8.0, 9.0];
+        let pre = [1.0, 2.0, 3.0, 4.0, 5.1];
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 4).unwrap(),
+            (vec![5.1, 6.0, 7.0, 8.0], 0.0)
+        );
+
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 4 - 1).unwrap(),
+            (vec![5.1, 6.0, 7.0, 8.0], 0.0)
+        );
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 5 - 1).unwrap(),
+            (vec![5.1, 6.0, 7.0, 8.0], 0.0)
+        );
+    }
+
+    #[test]
+    fn confusing_overlap() {
+        #[rustfmt::skip]
+        let cur = [                         6.0, 7.0, 8.0, 9.0, 10.0];
+        let pre = [1.0, 2.0, 3.0, 4.0, 5.1];
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 5).unwrap(),
+            (vec![5.1, 6.0, 7.0, 8.0, 9.0], 0.0)
+        );
+
+        // It's the best we can do for now... but feel free to change/improve.
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 5 - 1).unwrap(),
+            (vec![6.0, 7.0, 8.0, 9.0], 0.0)
+        );
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 6 - 1).unwrap(),
+            (vec![5.1, 6.0, 7.0, 8.0, 9.0], 0.0)
+        );
+    }
+
+    #[test]
+    fn no_possible_overlap() {
+        #[rustfmt::skip]
+        let cur = [                         6.0];
+        let pre = [1.0];
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 5).unwrap(),
+            (vec![1.0], 0.0)
+        );
+
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 5 - 1).unwrap(),
+            (vec![1.0], 0.0)
+        );
+        assert_eq!(
+            dedup(&cur, &pre, INTERVAL_SECS * 6 - 1).unwrap(),
+            (vec![1.0], 0.0)
         );
     }
 }
