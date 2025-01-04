@@ -33,54 +33,54 @@ crate), and a few basic metrics are printed.
 ```
 $ cargo run <path to data> 2>/dev/null
 AOL
-50'th percentile: 15.6s
-68'th percentile: 16.8s
-95'th percentile: 23.0s
-99'th percentile: 53.2s
-99.9'th percentile: 174.8s
+50'th percentile: 15.4s
+68'th percentile: 16.4s
+95'th percentile: 20.2s
+99'th percentile: 39.4s
+99.9'th percentile: 100.1s
 99.99'th percentile: 174.8s
 99.999'th percentile: 174.8s
-samples=552, minimum=10.1s, maximum=174.8s, mean=17.3s, stdev=9.7s
+samples=2921, minimum=9.6s, maximum=174.8s, mean=16.2s, stdev=5.8s
 
 Apple
-50'th percentile: 30.5s
-68'th percentile: 73.5s
-95'th percentile: 146.9s
+50'th percentile: 56.9s
+68'th percentile: 75.0s
+95'th percentile: 142.0s
 99'th percentile: 180.6s
 99.9'th percentile: 189.8s
-99.99'th percentile: 189.8s
-99.999'th percentile: 189.8s
-samples=553, minimum=14.4s, maximum=189.8s, mean=56.5s, stdev=44.0s
+99.99'th percentile: 223.7s
+99.999'th percentile: 223.7s
+samples=2919, minimum=13.1s, maximum=223.7s, mean=60.3s, stdev=42.8s
 
 Gmail
-50'th percentile: 17.1s
-68'th percentile: 20.1s
-95'th percentile: 63.4s
+50'th percentile: 17.3s
+68'th percentile: 19.4s
+95'th percentile: 57.8s
 99'th percentile: 98.4s
-99.9'th percentile: 180.6s
-99.99'th percentile: 180.6s
-99.999'th percentile: 180.6s
-samples=552, minimum=10.5s, maximum=180.6s, mean=23.5s, stdev=18.2s
+99.9'th percentile: 167.4s
+99.99'th percentile: 185.8s
+99.999'th percentile: 185.8s
+samples=2919, minimum=10.1s, maximum=185.8s, mean=22.5s, stdev=16.7s
 
 Hotmail
-50'th percentile: 21.0s
-68'th percentile: 30.2s
-95'th percentile: 110.3s
-99'th percentile: 169.0s
+50'th percentile: 19.9s
+68'th percentile: 23.4s
+95'th percentile: 99.4s
+99'th percentile: 157.6s
 99.9'th percentile: 180.9s
-99.99'th percentile: 180.9s
-99.999'th percentile: 180.9s
-samples=551, minimum=13.0s, maximum=180.9s, mean=37.2s, stdev=33.4s
+99.99'th percentile: 188.6s
+99.999'th percentile: 188.6s
+samples=2916, minimum=11.1s, maximum=188.6s, mean=31.1s, stdev=29.1s
 
 Yahoo!
-50'th percentile: 16.8s
-68'th percentile: 19.0s
-95'th percentile: 85.4s
-99'th percentile: 127.0s
-99.9'th percentile: 181.0s
-99.99'th percentile: 181.0s
-99.999'th percentile: 181.0s
-samples=551, minimum=10.8s, maximum=181.0s, mean=27.1s, stdev=25.4s
+50'th percentile: 16.4s
+68'th percentile: 17.8s
+95'th percentile: 52.5s
+99'th percentile: 106.9s
+99.9'th percentile: 180.7s
+99.99'th percentile: 180.8s
+99.999'th percentile: 180.8s
+samples=2919, minimum=10.1s, maximum=180.8s, mean=21.1s, stdev=17.6s
 ```
 
 [HdrHistogram]: https://github.com/HdrHistogram/HdrHistogram
