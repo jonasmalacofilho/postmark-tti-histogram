@@ -23,29 +23,13 @@ struct DataFile {
 fn main() -> Result<()> {
     let mut data_files = vec![];
     for entry in env::args().skip(1).flat_map(WalkDir::new) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if entry
-            .path()
-            .extension()
-            .map(|e| e != "json")
-            .unwrap_or(true)
+        let entry = entry.context("failed to walk the file tree")?;
+
+        if let Some(file) =
+            read_entry(&entry).context(format!("failed to read {}", entry.path().display()))?
         {
-            eprintln!("skipping non-JSON file: {}", entry.path().display());
-            continue;
+            data_files.push(file);
         }
-
-        let timestamp = timestamp_from_entry(&entry)
-            .context(entry.path().display().to_string())
-            .context("failed to determinate data file timestamp from its file name")?;
-        let contents: Vec<Service> = serde_json::from_slice(&fs::read(entry.path())?)?;
-
-        data_files.push(DataFile {
-            timestamp,
-            contents,
-        });
     }
     data_files.sort_by_key(|f| f.timestamp);
 
@@ -118,6 +102,40 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn read_entry(entry: &DirEntry) -> Result<Option<DataFile>> {
+    if !entry.file_type().is_file() {
+        return Ok(None);
+    }
+    if entry
+        .path()
+        .extension()
+        .map(|e| e != "json")
+        .unwrap_or(true)
+    {
+        eprintln!("skipping non-JSON file {}", entry.path().display());
+        return Ok(None);
+    }
+
+    let timestamp = timestamp_from_entry(&entry)
+        .context("failed to determinate data file timestamp from its file name")?;
+
+    let text = fs::read_to_string(entry.path()).context("failed to read file")?;
+    if text.contains("Internal Server Error") {
+        eprintln!(
+            "skipping Internal Server Error response {}",
+            entry.path().display()
+        );
+        return Ok(None);
+    }
+    let contents: Vec<Service> =
+        serde_json::from_str(&text).context("failed to deserialize data")?;
+
+    Ok(Some(DataFile {
+        timestamp,
+        contents,
+    }))
 }
 
 fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
