@@ -30,6 +30,8 @@ crate), and a few basic metrics are printed.
 
 ## Example
 
+Here's a summary of all the Postmark TTI data I have for 2025:
+
 ```
 $ cargo run path/to/postmark-tti-data/2025 2>/dev/null
 AOL
