@@ -163,8 +163,7 @@ fn timestamp_from_entry(entry: &DirEntry) -> Result<u64> {
 //           redundant     new
 // ```
 fn dedup(current: &[f64], previous: &[f64]) -> Result<Vec<f64>> {
-    ensure!(current.len() == previous.len());
-    let len = current.len();
+    let len = current.len().min(previous.len());
 
     for overlap in (1..len).rev() {
         // Ignore the last value in `previous`, as it'd be partially duplicated.
