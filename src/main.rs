@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use std::{env, fs};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use hdrhistogram::Histogram;
 use serde::Deserialize;
 use walkdir::{DirEntry, WalkDir};
@@ -118,7 +118,7 @@ fn read_entry(entry: &DirEntry) -> Result<Option<DataFile>> {
         return Ok(None);
     }
 
-    let timestamp = timestamp_from_entry(&entry)
+    let timestamp = timestamp_from_entry(entry)
         .context("failed to determinate data file timestamp from its file name")?;
 
     let text = fs::read_to_string(entry.path()).context("failed to read file")?;
